@@ -24,7 +24,8 @@ function initialPlan(): PlanState {
   return loadPlan() ?? blockedExitScenario();
 }
 
-export function usePlanner() {
+export function usePlanner(options: { shortcuts?: boolean } = { shortcuts: true }) {
+  const enableShortcuts = options.shortcuts ?? true;
   const [plan, setPlanState] = useState<PlanState>(initialPlan);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const planRef = useRef(plan);
@@ -192,6 +193,7 @@ export function usePlanner() {
 
   // 键盘快捷键
   useEffect(() => {
+    if (!enableShortcuts) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) {
@@ -245,7 +247,7 @@ export function usePlanner() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo, deleteSelected, rotateSelected, selectedId, commitNow]);
+  }, [undo, redo, deleteSelected, rotateSelected, selectedId, commitNow, enableShortcuts]);
 
   return {
     booths: plan.booths,
