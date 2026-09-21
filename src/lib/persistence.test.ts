@@ -1,7 +1,17 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { PlanState } from '../types';
-import { STORAGE_KEY } from '../constants';
-import { clearSavedPlan, loadPlan, savePlan } from './persistence';
+import { BUILD_ARCHIVE_KEY, BUILD_KEY, STORAGE_KEY } from '../constants';
+import {
+  clearSavedPlan,
+  clearBuildPlan,
+  loadBuildArchive,
+  loadBuildPlan,
+  loadPlan,
+  saveBuildArchive,
+  saveBuildPlan,
+  savePlan,
+} from './persistence';
+import { closeWave, createBuildPlan, recordEvent, startWave } from './waves';
 
 /** node 测试环境没有 localStorage，用内存 Map 打桩。 */
 class MemoryStorage {
@@ -81,5 +91,81 @@ describe('persistence 旋转角度与尺寸持久化', () => {
     savePlan(rotatedPlan(0));
     clearSavedPlan();
     expect(loadPlan()).toBeNull();
+  });
+});
+
+describe('搭建计划持久化（刷新恢复）', () => {
+  function sampleBuild() {
+    let p = createBuildPlan(
+      [
+        {
+          id: 'a', x: 1, y: 1, w: 3, h: 2, rotation: 0,
+          orientation: 'south', label: 'A', color: '#000', kind: 'booth',
+        },
+      ],
+      { now: 1000, name: '测试搭建' },
+    );
+    p = startWave(p, p.waves[0].id, 1001);
+    const itemId = p.waves[0].items[0].id;
+    p = recordEvent(
+      p,
+      itemId,
+      {
+        stage: 'installed',
+        actualBooth: {
+          id: 'a', x: 1.5, y: 1, w: 3, h: 2, rotation: 0,
+          orientation: 'south', label: 'A', color: '#000', kind: 'booth',
+        },
+      },
+      1002,
+    ).plan;
+    p = closeWave(p, p.waves[0].id, 1003);
+    return p;
+  }
+
+  it('保存后可原样恢复：波次、检查点、实测占地、归档都在', () => {
+    const p = sampleBuild();
+    saveBuildPlan(p);
+    const loaded = loadBuildPlan();
+    expect(loaded).not.toBeNull();
+    expect(loaded!.name).toBe('测试搭建');
+    expect(loaded!.waves[0].status).toBe('closed');
+    expect(loaded!.waves[0].items[0].actualBooth!.x).toBe(1.5);
+    expect(loaded!.waves[0].checkpoints.length).toBeGreaterThan(0);
+
+    saveBuildArchive([p]);
+    const archive = loadBuildArchive();
+    expect(archive).toHaveLength(1);
+    expect(archive[0].waves[0].items[0].measurements.length).toBeGreaterThan(0);
+  });
+
+  it('结构损坏/缺字段时返回 null，而不是抛错', () => {
+    storage().setItem(BUILD_KEY, '{not-json');
+    expect(loadBuildPlan()).toBeNull();
+    storage().setItem(
+      BUILD_KEY,
+      JSON.stringify({ id: 'x', frozenAt: 1, baseline: [], waves: [{ id: 'w', name: 'W' }] }),
+    );
+    expect(loadBuildPlan()).toBeNull();
+    storage().setItem(BUILD_ARCHIVE_KEY, JSON.stringify([{ junk: true }]));
+    expect(loadBuildArchive()).toEqual([]);
+  });
+
+  it('清除搭建计划后读取为 null', () => {
+    saveBuildPlan(sampleBuild());
+    clearBuildPlan();
+    expect(loadBuildPlan()).toBeNull();
+  });
+
+  it('旧版本缺 lateReceipts/activeWaveId 时补默认值', () => {
+    const p = sampleBuild();
+    const { lateReceipts, activeWaveId, ...old } = p;
+    void lateReceipts;
+    void activeWaveId;
+    storage().setItem(BUILD_KEY, JSON.stringify(old));
+    const loaded = loadBuildPlan();
+    expect(loaded).not.toBeNull();
+    expect(loaded!.lateReceipts).toEqual([]);
+    expect(loaded!.activeWaveId).toBeNull();
   });
 });

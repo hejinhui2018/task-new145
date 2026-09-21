@@ -27,7 +27,16 @@ const AXIS_TEXT: Record<'x' | 'y', string> = {
   y: '前后间距',
 };
 
-export function analyzePlan(booths: Booth[]): AnalysisResult {
+export interface AnalyzeOptions {
+  /** 这些 id 只作障碍、不作为疏散起点（如暂存货箱：占通道但无接待点） */
+  skipPathIds?: ReadonlySet<string>;
+}
+
+export function analyzePlan(
+  booths: Booth[],
+  opts: AnalyzeOptions = {},
+): AnalysisResult {
+  const skip = opts.skipPathIds;
   const alerts: Alert[] = [];
   const paths: Record<string, Point[]> = {};
   const blockedExitIds: string[] = [];
@@ -97,9 +106,10 @@ export function analyzePlan(booths: Booth[]): AnalysisResult {
     }
   }
 
-  // 3) 接待点 -> 任一出口（围挡是设施障碍，没有接待点，不参与疏散检查）
+  // 3) 接待点 -> 任一出口（围挡是设施障碍，没有接待点，不参与疏散检查；
+  //    暂存货箱等 skipPathIds 内的件同样只作障碍）
   for (const b of booths) {
-    if (b.kind === 'partition') continue;
+    if (b.kind === 'partition' || skip?.has(b.id)) continue;
     const start = receptionPoint(b);
     const result = findExitPath(booths, start);
     if (result.reachable) {

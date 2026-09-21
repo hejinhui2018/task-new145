@@ -7,6 +7,7 @@ interface ToolbarProps {
   onReset: (target: 'empty' | 'blocked-exit') => void;
   showPaths: boolean;
   onTogglePaths: () => void;
+  onFreeze: () => void;
 }
 
 export function Toolbar({
@@ -18,6 +19,7 @@ export function Toolbar({
   onReset,
   showPaths,
   onTogglePaths,
+  onFreeze,
 }: ToolbarProps) {
   return (
     <header className="toolbar">
@@ -30,6 +32,14 @@ export function Toolbar({
       <div className="tb-group">
         <button className="tb primary" onClick={onAddBooth}>
           ＋ 添加展位
+        </button>
+        <button
+          className="tb freeze-btn"
+          onClick={onFreeze}
+          disabled={false}
+          title="从当前方案冻结搭建计划，分波次记录现场进场与实测占地"
+        >
+          🧊 冻结搭建计划
         </button>
       </div>
 

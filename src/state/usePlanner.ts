@@ -24,7 +24,7 @@ function initialPlan(): PlanState {
   return loadPlan() ?? blockedExitScenario();
 }
 
-export function usePlanner() {
+export function usePlanner(active: boolean = true) {
   const [plan, setPlanState] = useState<PlanState>(initialPlan);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const planRef = useRef(plan);
@@ -192,6 +192,7 @@ export function usePlanner() {
 
   // 键盘快捷键
   useEffect(() => {
+    if (!active) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) {
@@ -245,7 +246,7 @@ export function usePlanner() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo, deleteSelected, rotateSelected, selectedId, commitNow]);
+  }, [active, undo, redo, deleteSelected, rotateSelected, selectedId, commitNow]);
 
   return {
     booths: plan.booths,

@@ -9,7 +9,7 @@
  *   并配合字符徽标（不只靠颜色）。
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { Alert, Booth, Point } from '../types';
+import type { Alert, AnalysisResult, Booth, Point } from '../types';
 import type { PlannerApi } from '../state/usePlanner';
 import {
   EXITS,
@@ -31,6 +31,26 @@ import {
 import { dragAnchor, resizeLocal, screenToWorld } from '../lib/grid';
 
 type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+
+/**
+ * 画布宿主覆盖：平面编辑模式不传（走 planner）；搭建模式传入真实平面、
+ * 锁定判定（前序已关闭波次遗留不可改）与实测占地的拖拽提交通道。
+ */
+export interface FloorView {
+  booths: Booth[];
+  analysis: AnalysisResult;
+  /** 只读（查看历史检查点证据）时禁用一切写交互 */
+  readOnly: boolean;
+  locked?: (b: Booth) => boolean;
+  /** 件来源标记：前序遗留（锁）/ 本波已装 / 暂存（货箱琥珀色） */
+  flagOf?: (b: Booth) => 'legacy' | 'installed' | 'staging' | undefined;
+  /** 计划占地虚影（尚未落地或与实测不符的计划位置，虚线轮廓） */
+  ghosts?: Booth[];
+  livePatch?: (id: string, patch: Partial<Booth>) => void;
+  commit?: () => void;
+  rotate?: (id: string) => void;
+  onDoubleClickEmpty?: (p: Point) => void;
+}
 
 interface DragSession {
   type: 'drag';
@@ -65,6 +85,8 @@ interface FloorPlanProps {
   activeAlertId: string | null;
   onActiveAlertChange: (id: string | null) => void;
   onZoomChange: (zoom: number) => void;
+  /** 搭建模式宿主；不传即平面编辑模式。 */
+  view?: FloorView;
 }
 
 export function FloorPlan({
@@ -73,6 +95,7 @@ export function FloorPlan({
   activeAlertId,
   onActiveAlertChange,
   onZoomChange,
+  view,
 }: FloorPlanProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [size, setSize] = useState({ w: 1000, h: 700 });
@@ -84,7 +107,13 @@ export function FloorPlan({
   sessionRef.current = session;
   const panMovedRef = useRef(false);
 
-  const { booths, analysis, selectedId } = planner;
+  const { selectedId } = planner;
+  const booths = view ? view.booths : planner.booths;
+  const analysis = view ? view.analysis : planner.analysis;
+  const readOnly = view?.readOnly ?? false;
+  const isLocked = (b: Booth) => readOnly || (view?.locked?.(b) ?? false);
+  const flagOf = (b: Booth) => view?.flagOf?.(b);
+  const ghosts = view?.ghosts ?? [];
 
   /* ---------- 尺寸与适应窗口 ---------- */
   /** 画布容器（svg 的父节点 .canvas-wrap）。 */
@@ -218,6 +247,7 @@ export function FloorPlan({
   /* ---------- 指针会话 ---------- */
   const startBoothDrag = (e: React.PointerEvent, b: Booth) => {
     e.stopPropagation();
+    if (isLocked(b)) return;
     (e.target as Element).setPointerCapture?.(e.pointerId);
     planner.selectBooth(b.id);
     // 抓取点换算到展位局部系并锁定：拖动（含旋转后再拖）都按同一点抓取。
@@ -227,6 +257,7 @@ export function FloorPlan({
 
   const startResize = (e: React.PointerEvent, b: Booth, handle: HandleId) => {
     e.stopPropagation();
+    if (isLocked(b)) return;
     (e.target as Element).setPointerCapture?.(e.pointerId);
     planner.selectBooth(b.id);
     setSession({
@@ -262,7 +293,7 @@ export function FloorPlan({
       }
       const w = toWorld(e.clientX, e.clientY);
       if (s.type === 'drag') {
-        const cur = planner.booths.find((b) => b.id === s.boothId);
+        const cur = booths.find((b) => b.id === s.boothId);
         if (!cur) return;
         // 局部抓取点按当前角度换算（拖动中旋转也不跳变），再按旋转外接框钳制。
         const raw = dragAnchor(w, s.grab, cur.rotation);
@@ -277,7 +308,8 @@ export function FloorPlan({
           HALL_WIDTH + DRAG_MARGIN,
           HALL_HEIGHT + DRAG_MARGIN,
         );
-        planner.liveUpdateBooth(s.boothId, p);
+        if (view) view.livePatch?.(s.boothId, p);
+        else planner.liveUpdateBooth(s.boothId, p);
       } else {
         // 缩放发生在局部系：以会话开始时的锚点/角度把指针投回局部坐标
         // （不能用实时锚点，西/北手柄会逐帧改变锚点导致漂移），
@@ -288,18 +320,23 @@ export function FloorPlan({
         );
         const r = resizeLocal(s.start.w, s.start.h, s.handle, local.x, local.y);
         const d = rotateVector(s.start.rotation, { x: r.ox, y: r.oy });
-        planner.liveUpdateBooth(s.boothId, {
+        const patch = {
           x: s.start.x + d.x,
           y: s.start.y + d.y,
           w: r.w,
           h: r.h,
-        });
+        };
+        if (view) view.livePatch?.(s.boothId, patch);
+        else planner.liveUpdateBooth(s.boothId, patch);
       }
     };
 
     const onUp = () => {
       const s = sessionRef.current;
-      if (s && s.type !== 'pan') planner.commitInteraction();
+      if (s && s.type !== 'pan') {
+        if (view) view.commit?.();
+        else planner.commitInteraction();
+      }
       if (s?.type === 'pan') panMovedRef.current = s.moved;
       setSession(null);
     };
@@ -310,13 +347,14 @@ export function FloorPlan({
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
-  }, [session, scale, toWorld, clampPan, planner]);
+  }, [session, scale, toWorld, clampPan, planner, view, booths]);
 
   /* ---------- 双击添加 / 单击空白取消选中 ---------- */
   const onDoubleClick = (e: React.MouseEvent) => {
     const w = toWorld(e.clientX, e.clientY);
     if (w.x < 0 || w.y < 0 || w.x > HALL_WIDTH || w.y > HALL_HEIGHT) return;
-    planner.addBoothAt(w.x, w.y);
+    if (view) view.onDoubleClickEmpty?.(w);
+    else planner.addBoothAt(w.x, w.y);
   };
 
   const onBackgroundClick = () => {
@@ -464,6 +502,11 @@ export function FloorPlan({
             />
           ))}
 
+          {/* 计划占地虚影：现场实测偏离计划时，虚线标出计划位置 */}
+          {ghosts.map((gb) => (
+            <GhostBooth key={`ghost-${gb.id}`} b={gb} u={u} />
+          ))}
+
           {/* 墙体与出口 */}
           <Walls u={u} blockedExitIds={analysis.blockedExitIds} />
 
@@ -474,6 +517,8 @@ export function FloorPlan({
               booth={b}
               u={u}
               selected={b.id === selectedId}
+              locked={isLocked(b)}
+              flag={flagOf(b)}
               alerts={analysis.alerts.filter(
                 (a) => a.boothId === b.id || a.relatedBoothId === b.id,
               )}
@@ -481,7 +526,7 @@ export function FloorPlan({
               reachable={(analysis.paths[b.id]?.length ?? 0) > 0}
               onPointerDown={(e) => startBoothDrag(e, b)}
               onHandleDown={(e, h) => startResize(e, b, h)}
-              onRotate={() => planner.rotateBooth(b.id)}
+              onRotate={() => (view ? view.rotate?.(b.id) : planner.rotateBooth(b.id))}
               onAlertClick={(a) => {
                 planner.selectBooth(b.id);
                 onActiveAlertChange(a.id);
@@ -777,6 +822,10 @@ interface BoothViewProps {
   alerts: Alert[];
   emphasized: boolean;
   reachable: boolean;
+  /** 锁定（前序波次遗留/只读）：无手柄、无旋转钮、不可拖 */
+  locked: boolean;
+  /** 搭建模式来源标记 */
+  flag?: 'legacy' | 'installed' | 'staging';
   onPointerDown: (e: React.PointerEvent) => void;
   onHandleDown: (e: React.PointerEvent, h: HandleId) => void;
   onRotate: () => void;
@@ -790,12 +839,15 @@ function BoothView({
   alerts,
   emphasized,
   reachable,
+  locked,
+  flag,
   onPointerDown,
   onHandleDown,
   onRotate,
   onAlertClick,
 }: BoothViewProps) {
   const isPartition = b.kind === 'partition';
+  const isStaging = flag === 'staging';
   // 所有几何都在局部（未旋转）系给出，再由这个组统一旋转——与 footprint 同一仿射。
   const deg = (b.rotation * 180) / Math.PI;
   const [fp1, fp2] = frontEdgeLocal(b);
@@ -828,11 +880,20 @@ function BoothView({
           width={b.w}
           height={b.h}
           rx={0.06}
-          fill={isPartition ? '#a1887f' : b.color}
-          fillOpacity={isPartition ? 0.92 : alerts.length ? 0.55 : 0.85}
-          stroke={selected ? '#1d4ed8' : '#1f2937'}
+          fill={
+            isStaging
+              ? '#f59e0b'
+              : isPartition
+                ? '#a1887f'
+                : b.color
+          }
+          fillOpacity={
+            isStaging ? 0.5 : isPartition ? 0.92 : alerts.length ? 0.55 : 0.85
+          }
+          stroke={locked ? '#475569' : selected ? '#1d4ed8' : '#1f2937'}
+          strokeDasharray={flag === 'legacy' ? `${0.22} ${0.12}` : undefined}
           strokeWidth={(selected ? 2.6 : 1.4) * u}
-          style={{ cursor: 'move' }}
+          style={{ cursor: locked ? 'not-allowed' : 'move' }}
           onPointerDown={onPointerDown}
         />
 
@@ -890,8 +951,8 @@ function BoothView({
           </text>
         )}
 
-        {/* 接待点（围挡没有接待点） */}
-        {!isPartition && (
+        {/* 接待点（围挡、暂存货箱没有接待点） */}
+        {!isPartition && !isStaging && (
           <>
             <circle
               cx={recv.x}
@@ -935,8 +996,8 @@ function BoothView({
           />
         ))}
 
-        {/* 选中：8 手柄 + 旋转钮（都在局部系，随展位旋转） */}
-        {selected && (
+        {/* 选中：8 手柄 + 旋转钮（都在局部系，随展位旋转）；锁定件不显示 */}
+        {selected && !locked && (
           <g pointerEvents="none">
             {(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as HandleId[]).map(
               (h) => {
@@ -1016,9 +1077,17 @@ function BoothView({
 
       {/* 告警字符徽标（不只靠颜色表达）：世界系、文字不随旋转倾斜 */}
       <g>
+        {locked && (
+          <g pointerEvents="none">
+            <circle cx={corner.x + 0.18} cy={corner.y - 0.18} r={0.15} fill="#475569" stroke="#fff" strokeWidth={1.4 * u} />
+            <text x={corner.x + 0.18} y={corner.y - 0.115} textAnchor="middle" fontSize={0.18} fill="#fff" fontWeight={700}>
+              锁
+            </text>
+          </g>
+        )}
         {badgeAlerts.map((a, i) => {
           const st = KIND_STYLE[a.kind];
-          const bx = corner.x + 0.18 + i * 0.34;
+          const bx = corner.x + 0.18 + (i + (locked ? 1 : 0)) * 0.34;
           const by = corner.y - 0.18;
           return (
             <g
@@ -1044,6 +1113,36 @@ function BoothView({
 
 function fmtDeg(deg: number): string {
   return String(Math.round(deg * 1000) / 1000);
+}
+
+/** 计划占地虚影：蓝色虚线轮廓 + “计划”小标，标出实测偏离的原始计划位置。 */
+function GhostBooth({ b, u }: { b: Booth; u: number }) {
+  const deg = (b.rotation * 180) / Math.PI;
+  return (
+    <g transform={`rotate(${fmtDeg(deg)} ${b.x} ${b.y})`} opacity={0.75} pointerEvents="none">
+      <rect
+        x={0}
+        y={0}
+        width={b.w}
+        height={b.h}
+        rx={0.06}
+        fill="rgba(37,99,235,0.06)"
+        stroke="#2563eb"
+        strokeWidth={1.4 * u}
+        strokeDasharray={`${0.24} ${0.14}`}
+      />
+      <text
+        x={b.w / 2}
+        y={-0.12}
+        textAnchor="middle"
+        fontSize={0.2}
+        fill="#2563eb"
+        fontWeight={700}
+      >
+        计划·{b.label}
+      </text>
+    </g>
+  );
 }
 
 function orientText(o: Booth['orientation']): string {

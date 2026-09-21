@@ -21,3 +21,7 @@ export const EXITS: ExitDef[] = [
 
 /** 本地存储键。 */
 export const STORAGE_KEY = 'booth-planner:plan:v1';
+/** 当前搭建计划（波次交接现场状态）。 */
+export const BUILD_KEY = 'booth-planner:build:v1';
+/** 已归档搭建计划（供两次搭建对比）。 */
+export const BUILD_ARCHIVE_KEY = 'booth-planner:build-archive:v1';
